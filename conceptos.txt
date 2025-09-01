@@ -1,0 +1,6 @@
+* Qué son microservicios (responsabilidad única, bases separadas, comunicación por API).
+
+* JWT (qué es, cómo generar y validar en Flask).
+JWT significa JSON Web Token
+
+* REST básico (GET, POST, PUT/PATCH, DELETE, códigos HTTP).

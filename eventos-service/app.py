@@ -3,11 +3,13 @@ from flask import Flask, request, jsonify
 import os
 from dotenv import load_dotenv
 from helpers import validar_token
+import sqlite3
 
 load_dotenv()
 
 app = Flask(__name__)
 PUERTO_EVENTOS = 8002
+DB_PATH = "db/eventos.db"
 TOKEN_SECRETO = os.getenv("SECRET_TOKEN")
 
 # Funcion para Autenticacion de Token
@@ -40,12 +42,23 @@ def eventos():
         
         nombre_evento = data.get("nombre")
         puntos_base = data.get("puntos_base")
+        fecha = data.get("fecha")
 
         if not nombre_evento and not isinstance(puntos_base, int):
             return jsonify({"error": "faltan campos o tipos inválidos"}), 422
         
         print("Nuevo evento creado")
-        return jsonify({"evento": nombre_evento, "puntos": puntos_base}), 201
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.execute(
+                    "INSERT INTO eventos (nombre, puntos_base, fecha) VALUES (?,?,?)",
+                    (data["nombre"], data["puntos_base"], data["fecha"])
+                )
+                log_id = cur.lastrowid
+        except Exception as e:
+            print("DB ERROR:", repr(e))
+            return jsonify({"error": "db error"}), 500
+        return jsonify({"id":log_id,"evento": nombre_evento, "puntos": puntos_base, "fecha":fecha}), 201
 
     if request.method == "GET":
         return jsonify({"metodo":"get"}), 200

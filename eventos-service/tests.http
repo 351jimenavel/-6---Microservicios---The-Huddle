@@ -1,0 +1,28 @@
+## Archivo para testeo de casos varios
+#### agregar el token valido si se desea testear
+
+### Crear un nuevo evento (POST)
+POST http://127.0.0.1:8002/eventos
+Content-Type: application/json
+Authorization: Bearer 
+
+{
+    "nombre":"Autoconfianza",
+    "puntos_base":100,
+    "fecha":"27/06/2025"
+}
+
+### Obtener detalle de un evento por ID (GET)
+GET http://localhost:8002/eventos/1
+Authorization: Bearer 
+
+### Listar todos los eventos (GET)
+GET http://localhost:8002/eventos
+Authorization: Bearer 
+
+### Listar todos los eventos (GET)
+GET http://localhost:8002/eventos?activo=1
+Authorization: Bearer 
+
+### Intentar acceder sin token (debería dar 401)
+GET http://localhost:8002/eventos/1

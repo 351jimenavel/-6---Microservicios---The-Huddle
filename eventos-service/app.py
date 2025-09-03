@@ -2,7 +2,7 @@
 from flask import Flask, request, jsonify
 import os
 from dotenv import load_dotenv
-from helpers import validar_token
+from helpers import validar_token, crear_db, consultar_un_evento
 import sqlite3
 
 load_dotenv()
@@ -11,6 +11,8 @@ app = Flask(__name__)
 PUERTO_EVENTOS = 8002
 DB_PATH = "db/eventos.db"
 TOKEN_SECRETO = os.getenv("SECRET_TOKEN")
+# --- init DB al arrancar (idempotente)
+crear_db(DB_PATH)
 
 # Funcion para Autenticacion de Token
 # def validar_token():
@@ -27,43 +29,64 @@ def inicio():
         "status":"ok"}), 200
 
 # Endpoint para crear eventos (POST), listar eventos (GET) o detallar un evento (GET + id del evento)
-@app.route("/eventos", methods=["GET", "POST"])
-def eventos():
+@app.route("/eventos", methods=["POST"])
+def crear_evento():
+    
+    # Validacion de autenticacion
+    error = validar_token()
+    if error:
+        return error
+    
+    # Si el token es valido
+    data = request.get_json(silent=True)
+    if data is None:
+        return jsonify({"error":"json inválido"}), 400      # Bad Request
+    
+    nombre_evento = data.get("nombre")
+    puntos_base = data.get("puntos_base")
+    fecha = data.get("fecha")
 
-    if request.method == "POST":
-        error = validar_token()
-        if error:
-            return error
-        
-        # Si el token es valido
-        data = request.get_json(silent=True)
-        if data is None:
-            return jsonify({"error":"json inválido"}), 400      # Bad Request
-        
-        nombre_evento = data.get("nombre")
-        puntos_base = data.get("puntos_base")
-        fecha = data.get("fecha")
+    if not nombre_evento or not isinstance(puntos_base, int):
+        return jsonify({"error": "faltan campos o tipos inválidos"}), 422
+    
+    print("Nuevo evento creado")
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "INSERT INTO eventos (nombre, puntos_base, fecha) VALUES (?,?,?)",
+                (nombre_evento, puntos_base, fecha)
+            )
+            evento_id = cur.lastrowid
+    except Exception as e:
+        print("DB ERROR:", repr(e))
+        return jsonify({"error": "db error"}), 500
+    return jsonify({"id":evento_id,"evento": nombre_evento, "puntos": puntos_base, "fecha":fecha, "activo": 1}), 201
 
-        if not nombre_evento and not isinstance(puntos_base, int):
-            return jsonify({"error": "faltan campos o tipos inválidos"}), 422
-        
-        print("Nuevo evento creado")
-        try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.execute(
-                    "INSERT INTO eventos (nombre, puntos_base, fecha) VALUES (?,?,?)",
-                    (data["nombre"], data["puntos_base"], data["fecha"])
-                )
-                log_id = cur.lastrowid
-        except Exception as e:
-            print("DB ERROR:", repr(e))
-            return jsonify({"error": "db error"}), 500
-        return jsonify({"id":log_id,"evento": nombre_evento, "puntos": puntos_base, "fecha":fecha}), 201
+@app.route("/eventos/<int:evento_id>", methods=["GET"])
+def detalle_evento(evento_id):
 
-    if request.method == "GET":
-        return jsonify({"metodo":"get"}), 200
-        # 1- devolver lista de eventos que existen
-        # 2- devolver detalle de un evento especifico
+    # Validacion de autenticacion
+    error = validar_token()
+    if error:
+        return error
+    
+    query = f"SELECT id, nombre, puntos_base, fecha, activo FROM eventos WHERE id = ? AND activo = 1"
+    row = consultar_un_evento(
+        DB_PATH,
+        query,
+        (evento_id,)
+    )
+    print({'Evento ID': f'{evento_id}'})
+
+    if not row:
+        return jsonify({"error": "evento no encontrado"}), 404
+    
+    return jsonify(row), 200
+        
+        #return jsonify({"data": rows}), 200
+    #return jsonify({id, "nombre", "puntos_base", "fecha", activo}), 200
+    # 1- devolver lista de eventos que existen
+    # 2- devolver detalle de un evento especifico
 
 if __name__ == "__main__":
     app.run(debug=True, port=PUERTO_EVENTOS)

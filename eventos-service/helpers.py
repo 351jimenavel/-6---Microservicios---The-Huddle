@@ -18,7 +18,7 @@ def validar_token():
         return jsonify({"error":"Cliente desconocido"}), 401    # Unauthorized
     return None
 
-def crear_db():
+def crear_db(DB_PATH):
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS eventos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,11 +29,13 @@ def crear_db():
         )""")
 
         conn.commit()
-        
-def consultar_db():
-    pass
 
+def consultar_un_evento(db_path, query, params):
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(query, params)
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 if __name__ == "__main__":
-    crear_db()
     print("Seeder OK. DB en:", DB_PATH)

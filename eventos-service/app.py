@@ -103,19 +103,30 @@ def crear_evento():
 @app.route("/eventos/<int:evento_id>", methods=["GET"])
 def detalle_evento(evento_id):
 
-    # Validacion de autenticacion
-    error = validar_token()
-    if error:
-        return error
-    
-    # Validacion cliente interno
-    internal_key_cliente = request.headers["X-Internal-Token"]
-    if not internal_key_cliente:
-        return jsonify({"error":"falta X-Internal-Token"}), 401
-    
-    if internal_key_cliente != INTERNAL_TOKEN:
-        return jsonify({"error":"X-Internal-Token incorrecto"}), 403
+    # Auth mixto: externo (Authorization) o interno (X-Internal-Token)
+    auth = request.headers.get("Authorization", "")
+    internal = request.headers.get("X-Internal-Token")
 
+    ok = False
+
+    # 1) Cliente externo (Authorization: Bearer <SECRET_TOKEN>)
+    if auth.startswith("Bearer "):
+        token = auth.split(" ", 1)[1]
+        if token == TOKEN_SECRETO:
+            ok = True
+        else:
+            return jsonify({"error": "token inválido"}), 401
+
+    # 2) Servicio interno (X-Internal-Token)
+    elif internal:
+        if internal == INTERNAL_TOKEN:
+            ok = True
+        else:
+            return jsonify({"error": "X-Internal-Token incorrecto"}), 403
+
+    # 3) Ninguna credencial
+    if not ok:
+        return jsonify({"error": "credencial requerida"}), 401
     
     query = f"SELECT id, nombre, puntos_base, fecha, activo FROM eventos WHERE id = ? AND activo = 1"
     row = consultar_un_evento(

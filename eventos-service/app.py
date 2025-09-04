@@ -2,15 +2,18 @@
 from flask import Flask, request, jsonify
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 from helpers import validar_token, crear_db, consultar_un_evento
 import sqlite3
 
-load_dotenv()
+# cargar el .env desde la raíz del proyecto
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 
 app = Flask(__name__)
 PUERTO_EVENTOS = 8002
 DB_PATH = "db/eventos.db"
 TOKEN_SECRETO = os.getenv("SECRET_TOKEN")
+INTERNAL_TOKEN = os.getenv("INTERNAL_TOKEN")
 # --- init DB al arrancar (idempotente)
 crear_db(DB_PATH)
 
@@ -71,6 +74,7 @@ def crear_evento():
         
         # Si el token es valido
         data = request.get_json(silent=True)
+        print(data)
         if data is None:
             return jsonify({"error":"json inválido"}), 400      # Bad Request
         
@@ -103,6 +107,15 @@ def detalle_evento(evento_id):
     error = validar_token()
     if error:
         return error
+    
+    # Validacion cliente interno
+    internal_key_cliente = request.headers["X-Internal-Token"]
+    if not internal_key_cliente:
+        return jsonify({"error":"falta X-Internal-Token"}), 401
+    
+    if internal_key_cliente != INTERNAL_TOKEN:
+        return jsonify({"error":"X-Internal-Token incorrecto"}), 403
+
     
     query = f"SELECT id, nombre, puntos_base, fecha, activo FROM eventos WHERE id = ? AND activo = 1"
     row = consultar_un_evento(

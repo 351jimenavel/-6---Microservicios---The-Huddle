@@ -1,0 +1,72 @@
+@auth = http://localhost:8001
+@eventos = http://localhost:8002
+@puntos = http://localhost:8003
+@ranking = http://localhost:8004
+@json = Content-Type: application/json
+
+# [!] Después del LOGIN, copiá el access_token aquí:
+@token = 
+###
+# 0) AUTH — Healthcheck
+GET {{auth}}/
+###
+
+# 1) AUTH — Register (201)
+POST {{auth}}/auth/register
+{{json}}
+
+{
+"email": "ivan@example.com",
+"password": "holaa"
+}
+
+###
+# 2) AUTH — Login (200) → Copiar el "access_token" del response y pegarlo en @token arriba
+POST {{auth}}/auth/login
+{{json}}
+
+{
+"email": "ivan@example.com",
+"password": "holaa"
+}
+
+###
+# 3) AUTH — Me (200) usando JWT
+GET {{auth}}/auth/me
+Authorization: Bearer {{token}}
+
+
+###
+# 4) EVENTOS 
+### Crear un nuevo evento (POST)
+POST http://127.0.0.1:8002/eventos
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+    "nombre":"Autoconfianza",
+    "puntos_base":100,
+    "fecha":"13/06/2025"
+}
+
+###
+# 5) PUNTOS — Asignar puntos al usuario autenticado (JWT)
+#   Contrato sugerido (simple):
+#     - Body: { "puntos": <int>, "evento_id": "<string>" }
+#     - user_id se toma del JWT (claim "sub") en el servicio
+POST {{puntos}}/puntos
+Authorization: Bearer {{token}}
+{{json}}
+
+{
+"puntos": 100,
+"evento_id": 4
+}
+
+################################################################################
+
+###
+# — Leer detalle de un evento (GET /eventos/1)
+#    (Ajusta el ID si tu servicio usa otro)
+GET {{eventos}}/eventos/1
+Authorization: Bearer {{token}}

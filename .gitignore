@@ -2,3 +2,12 @@
 .venv/
 venv/
 env/
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# SQLite DB files
+db/
+*.db

@@ -3,26 +3,20 @@ from flask import Flask, request, jsonify
 import os
 from dotenv import load_dotenv
 from pathlib import Path
-from helpers import validar_token, crear_db, consultar_un_evento
+from helpers import crear_db, consultar_un_evento
+from jwt_helper import validar_jwt_o_401
 import sqlite3
 
 # cargar el .env desde la raíz del proyecto
-load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+load_dotenv()
 
 app = Flask(__name__)
-PUERTO_EVENTOS = 8002
-DB_PATH = "db/eventos.db"
+PUERTO_EVENTOS = os.getenv("EVENTOS_PORT")
+DB_PATH = os.getenv("EVENTOS_DB_PATH")
 TOKEN_SECRETO = os.getenv("SECRET_TOKEN")
 INTERNAL_TOKEN = os.getenv("INTERNAL_TOKEN")
 # --- init DB al arrancar (idempotente)
 crear_db(DB_PATH)
-
-# Funcion para Autenticacion de Token
-# def validar_token():
-#     auth = request.headers.get("Authorization", "")
-#     prefijo = "Bearer "
-#     if not auth or not auth.startswith(prefijo) or auth.split(" ",1)[1] != TOKEN_SECRETO:
-#         return jsonify({"error":"Cliente desconocido"}), 401    # Unauthorized
 
 # Endpoint raíz para verificar que el servicio está corriendo correctamente
 @app.route("/")
@@ -67,14 +61,13 @@ def crear_evento():
     ## logica METODO POST
     if request.method == "POST":
 
-        # Validacion de autenticacion
-        error = validar_token()
-        if error:
-            return error
+        claims, err_resp, err_code = validar_jwt_o_401()
+        if err_resp:
+            return err_resp, err_code
         
         # Si el token es valido
         data = request.get_json(silent=True)
-        print(data)
+
         if data is None:
             return jsonify({"error":"json inválido"}), 400      # Bad Request
         
@@ -99,42 +92,26 @@ def crear_evento():
         
         return jsonify({"id":evento_id,"evento": nombre_evento, "puntos": puntos_base, "fecha":fecha, "activo": 1}), 201
 
-# Endpoint para devolver detalles de un evento especifico (GET + id de un evento activo)
+# Endpoint para devolver detalles de un evento especifico (GET + id de un evento)
 @app.route("/eventos/<int:evento_id>", methods=["GET"])
 def detalle_evento(evento_id):
 
-    # Auth mixto: externo (Authorization) o interno (X-Internal-Token)
-    auth = request.headers.get("Authorization", "")
-    internal = request.headers.get("X-Internal-Token")
-
-    ok = False
-
-    # 1) Cliente externo (Authorization: Bearer <SECRET_TOKEN>)
-    if auth.startswith("Bearer "):
-        token = auth.split(" ", 1)[1]
-        if token == TOKEN_SECRETO:
-            ok = True
-        else:
-            return jsonify({"error": "token inválido"}), 401
-
-    # 2) Servicio interno (X-Internal-Token)
-    elif internal:
-        if internal == INTERNAL_TOKEN:
-            ok = True
-        else:
-            return jsonify({"error": "X-Internal-Token incorrecto"}), 403
-
-    # 3) Ninguna credencial
-    if not ok:
+    # 1) Requerir Bearer <TOKEN_SERVICIO>
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
         return jsonify({"error": "credencial requerida"}), 401
     
-    query = f"SELECT id, nombre, puntos_base, fecha, activo FROM eventos WHERE id = ? AND activo = 1"
+    token = auth_header.split(" ", 1)[1]
+    if token != INTERNAL_TOKEN:   # el mismo que usa Puntos Service
+        return jsonify({"error": "token inválido"}), 403
+
+    # 2) Consultar evento en DB
+    query = f"SELECT id, activo FROM eventos WHERE id = ?"
     row = consultar_un_evento(
         DB_PATH,
         query,
         (evento_id,)
     )
-    print({'Evento ID': f'{evento_id}'})
 
     if not row:
         return jsonify({"error": "evento no encontrado"}), 404
@@ -143,3 +120,6 @@ def detalle_evento(evento_id):
         
 if __name__ == "__main__":
     app.run(debug=True, port=PUERTO_EVENTOS)
+
+
+############################################################################################################################

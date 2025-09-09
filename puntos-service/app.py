@@ -1,18 +1,17 @@
 # Iniciamos codigo base p/ levantar servidor
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify
 import os
 from dotenv import load_dotenv
-from helpers import validar_token, crear_db,generador_created_at, generar_correlation_id
-import sqlite3
-import requests
-import uuid
+from helpers import (crear_db, insertar_transaccion, generar_created_at, listar_por_user, revocar_transaccion)
 from http_client import consultar_eventos_service
+from jwt_helper import validar_jwt_o_401
 
 load_dotenv()
 
 app = Flask(__name__)
-PUERTO_PUNTOS = 8003
-DB_PATH = "db/transacciones.db"
+
+PUERTO_PUNTOS = int(os.getenv("PUNTOS_PORT"))
+DB_PATH = os.getenv("PUNTOS_DB_PATH")
 EVENTOS_BASE_URL = os.getenv("EVENTOS_BASE_URL")
 # --- init DB al arrancar (idempotente)
 crear_db(DB_PATH)
@@ -26,119 +25,113 @@ def inicio():
 FLUJO:
 ** Cliente asigna puntos a un usuario:
 
-Llama a Puntos Service (POST /puntos + Idempotency-Key).
+Llama a Puntos Service (POST /puntos).
 
 Puntos valida el token → pide a Eventos Service “¿este evento existe?” usando X-Internal-Token.
 
 Si sí → guarda transacción en DB de puntos.
 
--------
-** Cliente revisa historial:
-
-Llama a Puntos Service (GET /puntos/user/{id}).
-
--------
-** Si hubo error (asignación incorrecta)
-
-Cliente llama a Puntos Service (DELETE /puntos/{tx_id}) → estado “revocada”.
-
 '''
 
-
-# Endpoint para asignar puntos a un usuario (usa Idempotency-Key para no duplicar).
+# Endpoint para asignar puntos a un usuario.
 @app.route("/puntos", methods=["POST"])
-def puntos():
+def asignar_puntos():
 
-    # Validacion de autenticacion
-    error = validar_token()
-    if error:
-        return error
+    # 1) Auth (JWT)
+    claims, err_resp, err_code = validar_jwt_o_401()
+    if err_resp:
+        return err_resp, err_code
     
-    # Si el token es valido
-    data = request.get_json(silent=True)
-    if data is None:
-        return jsonify({"error":"json inválido"}), 400      # Bad Request
-    
-    # Validacion Idempotency-Key
-    idem_key = request.headers["Idempotency-Key"]
-    if not idem_key:
-        return jsonify({"error":"falta Idempotency-Key"}), 422
-
-    # Toma o genera un correlation_id
-    """
-    Generates or retrieves a correlation ID for the incoming request.
-    If 'X-Correlation-ID' header is present, it uses that; otherwise,
-    it generates a new UUID.
-    """
-    correlation_id = request.headers.get('X-Correlation-ID') or generar_correlation_id()
-    g.correlation_id = correlation_id  # Store in Flask's global request context
-
-    # Llamar al helper del cliente interno (dentro del archivo http_client) para consultar el evento
-    existe_evento = consultar_eventos_service(evento_id, correlation_id)
-    # Si el evento existe, sigue con la lógica (insertar transacción, idempotencia, etc.).
-    if existe_evento:
-        pass
-
-    # Ya existe una transacción con esa Idempotency-Key? Consultar a db
-    query = "SELECT * FROM transacciones WHERE idem_key = ?"
-    
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.execute(query, idem_key)
-            #conn.execute(query, params)
-            row = cur.fetchone()
-            return row
-    except Exception as e:
-        print("DB -idem ERROR:", repr(e))
-        return jsonify({"error": "db -idem error"}), 500
-    
-    if row:
-        return jsonify({"data":row}), 201
-    else:
-        # Verificar que el evento exista en la tabla de eventos de eventos-service
-        # Validar el evento contra eventos-service (S2S)
-        pass
-
-    #Cuando hacia el llamado a la funcion que esta en helpers
-    #if #consultar_por_idem_key(DB_PATH,"SELECT * FROM transacciones WHERE idem_key = ?", idem_key):
-    #    return jsonify({"data":})
-
-    
+    # 3) Body
     # Validacion body
-    user_id = data.get("user_id")
-    evento_id = data.get("evento_id")
-    puntos = data.get("puntos")
-
-    if not user_id or not isinstance(user_id, int) or not evento_id or not isinstance(evento_id, int) or not puntos or not isinstance(puntos, int):
-            return jsonify({"error": "faltan campos o tipos inválidos"}), 422
-
-    created_at = generador_created_at()
-    print("Nueva transaccion ingresada")
-
-
-    # Insertar transaccion en la db
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cur = conn.execute("INSERT INTO transacciones (user_id,evento_id,puntos, created_at, estado) VALUES (?,?,?,?,?)",())
-            id = cur.lastrowid
-    except Exception as e:
-            print("DB ERROR:", repr(e))
-            return jsonify({"error": "db error"}), 500
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({"error":"json invalido"}), 400      # Bad Request
     
-    return jsonify({"id":id,"user_id": user_id, "evento_id": evento_id, "puntos": puntos_base, "created_at": created_at, "estado": 1}), 201
+    evento_id = body.get("evento_id")
+    puntos = body.get("puntos")
+    
+    # 4) user_id desde JWT (sub)
+    user_id = claims.get("sub") # user_id REAL tomado del JWT
+    if not user_id:
+        return jsonify({"error": "token sin 'sub' (user_id)"}), 401
+    try:
+        user_id_int = int(user_id)
+    except ValueError:
+        return jsonify({"error": "user_id invalido"}), 422
 
+    # 5) Validaciones mínimas
+    if evento_id is None:
+        return jsonify({"error": "evento_id requerido"}), 400
+    if not isinstance(evento_id, int):
+        return jsonify({"error": "evento_id debe ser int"}), 422
+    
+    if puntos is not None:
+        if not isinstance(puntos, int) or puntos < 0:
+            return jsonify({"error": "puntos invalidos"}), 400
+    
+    # 6) Consultar evento en Eventos Service
+    # Llamar al helper del cliente interno (dentro del archivo http_client) para consultar el evento
+    existe_evento = consultar_eventos_service(evento_id)
+    # Si el evento existe, sigue con la lógica (insertar transacción, idempotencia, etc.).
+    if not existe_evento.get("ok"):
+        if existe_evento.get("status") == 404:
+            return jsonify({"error": "evento no encontrado"}), 404
+        return jsonify({"error": "eventos no disponible"}), 500
+
+    evento = existe_evento["data"]
+
+    # 7) Definir puntos_final (si no vino en body, usar puntos_base del evento)
+    if puntos is None:
+        puntos_final = int(evento.get("puntos_base", 0))
+    else:
+        puntos_final = puntos
+
+    # 8) Insertar transacción
+    created_at = generar_created_at()
+
+    try:
+        tx_id = insertar_transaccion(user_id_int, evento_id, puntos_final, created_at, DB_PATH)
+    except Exception:
+        return jsonify({"error": "db error"}), 500
+
+    return jsonify({
+        "id": tx_id,
+        "user_id": user_id,
+        "evento_id": evento_id,
+        "puntos": puntos_final,
+        "created_at": created_at,
+        "estado": "activa",
+    }), 201
+
+
+    
+#########################################################################
+# Endpoint para listar puntos sin filtros (Aun decidiendo si hacer o no)
 # Endpoint para mostrar historial de transacciones de un usuario.
-@app.route("/puntos/user/<user_id>", methods=["GET"])
-def puntos_por_user():
-    pass
+# Historial por usuario (simple)
+@app.route("/puntos/user/<int:user_id>", methods=["GET"])
+def puntos_por_user(user_id):
+    # Auth
+    claims, err_resp, err_code = validar_jwt_o_401()
+    if err_resp:
+        return err_resp, err_code
+    
+    estado = request.args.get("estado")
+    rows = listar_por_user(user_id, estado,DB_PATH)
+    return jsonify({"data": rows}), 200
 
 # Endpoint para revocar puntos a un usuario (Ej: se asigno por el error los puntos)
-@app.route("/puntos/<tx_id>", methods=["DELETE"])
-def revocar_puntos():
-    pass
-
-
+@app.route("/puntos/<int:tx_id>", methods=["DELETE"])
+def revocar_puntos(tx_id):
+    # Auth
+    claims, err_resp, err_code = validar_jwt_o_401()
+    if err_resp:
+        return err_resp, err_code
+    
+    _ = revocar_transaccion(tx_id, DB_PATH)
+    # Idempotente: devolver 204 aunque ya estuviera revocada o no exista
+    return ("", 204)
 
 if __name__ == "__main__":
     app.run(debug=True, port=PUERTO_PUNTOS)

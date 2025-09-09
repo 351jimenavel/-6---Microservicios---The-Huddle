@@ -1,7 +1,7 @@
 '''
 Archivo para funciones varias
 '''
-from flask import Flask, request, jsonify
+from flask import request, jsonify
 import os
 from dotenv import load_dotenv
 import sqlite3
